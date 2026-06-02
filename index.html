@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Cathode-Ray Tube Amusement Device Simulator</title>
+<style>
+  html, body { 
+    margin: 0; 
+    height: 100%; 
+    overflow: hidden; 
+    background-color: #c8c9c7;
+    background-image: 
+      radial-gradient(circle at 20px 20px, rgba(0,0,0,0.05) 2px, transparent 3px),
+      radial-gradient(circle at 80px 80px, rgba(0,0,0,0.03) 2px, transparent 3px);
+    background-size: 120px 120px;
+    font-family: monospace, sans-serif; 
+  }
+  
+  #panel {
+    position: absolute;
+    top: 15px;
+    left: 15px;
+    width: 310px;
+    background: linear-gradient(to bottom, #d2a679, #c19a6b, #a67c52);
+    border: 3px solid #5c3a21;
+    padding: 15px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: 5px 5px 15px rgba(0,0,0,0.5);
+    z-index: 10;
+    border-radius: 4px;
+  }
+  
+  .control-group {
+    background: rgba(0,0,0,0.15);
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(0,0,0,0.3);
+    box-shadow: inset 1px 1px 3px rgba(0,0,0,0.2);
+  }
+
+  .control-group label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 6px;
+    color: #111;
+    font-size: 0.95rem;
+  }
+
+  .control-group input[type="range"] { width: 100%; cursor: pointer; }
+  
+  .value-display { 
+    float: right; 
+    font-weight: normal; 
+    background: #222; 
+    color: #0f0; 
+    padding: 2px 6px; 
+    border-radius: 3px; 
+  }
+
+  button {
+    padding: 12px;
+    font-size: 1.1rem;
+    font-weight: bold;
+    background: #333;
+    color: #fff;
+    border: 2px solid #111;
+    border-radius: 5px;
+    cursor: pointer;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.5);
+    transition: background 0.1s;
+  }
+  
+  button:hover { background: #555; }
+  button:active { transform: translateY(2px); box-shadow: none; }
+
+  #statusBoard {
+    background: #000;
+    color: #0f0;
+    padding: 12px;
+    border-radius: 4px;
+    border: 2px solid #444;
+    font-size: 1.1rem;
+    font-weight: bold;
+  }
+  
+  .status-line { margin: 4px 0; display: flex; justify-content: space-between; }
+
+  #crt {
+    display: block;
+    margin: 20px auto;
+    background: #000;
+    border-radius: 50%;
+    box-shadow: 0 0 0 12px #1a1a1a, 10px 10px 30px rgba(0,0,0,0.6);
+  }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <button id="fireBtn">発射 (Space)</button>
+  
+  <div id="statusBoard">
+    <div class="status-line">Status: <span id="statusText" style="color:#fff;">READY</span></div>
+    <div class="status-line">Time: <span id="timeText">0.00s</span></div>
+    <div class="status-line">Targets Hit: <span id="scoreText">0</span></div>
+  </div>
+
+  <div class="control-group">
+    <label>Trajectory (軌道) <span class="value-display" id="trajectoryDisplay">45°</span></label>
+    <input type="range" id="trajectory" min="0" max="90" value="45">
+  </div>
+  <div class="control-group">
+    <label>Blast Time (爆発) <span class="value-display" id="blastTimeDisplay">150</span></label>
+    <input type="range" id="blastTime" min="20" max="150" value="150">
+  </div>
+  <div class="control-group">
+    <label>Spot Size (大きさ) <span class="value-display" id="spotSizeDisplay">10%</span></label>
+    <input type="range" id="spotSize" min="0.05" max="0.3" step="0.01" value="0.1">
+  </div>
+
+  <hr style="border-color: rgba(0,0,0,0.3); width: 100%; margin: 0;">
+
+  <div class="control-group">
+    <label>Target Count <span class="value-display" id="targetCountDisplay">5</span></label>
+    <input type="range" id="targetCount" min="1" max="1000" value="5">
+  </div>
+  <div class="control-group">
+    <label>Target Size <span class="value-display" id="targetSizeDisplay">1.0x</span></label>
+    <input type="range" id="targetSize" min="0.5" max="2.0" step="0.1" value="1.0">
+  </div>
+  <div class="control-group" style="display: flex; align-items: center;">
+    <input type="checkbox" id="moveToggle" style="width: 20px; height: 20px;">
+    <label style="margin: 0 0 0 10px; cursor:pointer;" for="moveToggle">Moving Targets</label>
+  </div>
+</div>
+
+<canvas id="crt"></canvas>
+
+<script>
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+}
+
+function playSound(type) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+
+  switch (type) {
+    case 'fire':
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(800, now);
+      osc.frequency.exponentialRampToValueAtTime(100, now + 0.15);
+      gain.gain.setValueAtTime(0.03, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      osc.start(now);
+      osc.stop(now + 0.15);
+      break;
+    case 'blast':
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(100, now);
+      osc.frequency.exponentialRampToValueAtTime(20, now + 0.4);
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.linearRampToValueAtTime(0.001, now + 0.4);
+      osc.start(now);
+      osc.stop(now + 0.4);
+      break;
+    case 'hit':
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(1200, now);
+      osc.frequency.setValueAtTime(2000, now + 0.05);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
+      break;
+    case 'clear':
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.setValueAtTime(554.37, now + 0.1);
+      osc.frequency.setValueAtTime(659.25, now + 0.2);
+      osc.frequency.setValueAtTime(880, now + 0.3);
+      gain.gain.setValueAtTime(0.08, now);
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.5);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+      osc.start(now);
+      osc.stop(now + 1.0);
+      break;
+    case 'click':
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1000, now);
+      gain.gain.setValueAtTime(0.015, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
+      osc.start(now);
+      osc.stop(now + 0.03);
+      break;
+  }
+}
+
+const canvas = document.getElementById('crt');
+const ctx = canvas.getContext('2d');
+const phosphorCanvas = document.createElement('canvas');
+const pctx = phosphorCanvas.getContext('2d');
+
+let dpr = 1;
+let cx = 0, cy = 0, radarRadius = 0;
+let gun = { x: 0, y: 0 }; 
+let score = 0;
+
+let timerStart = null;
+let timerElapsed = 0;
+let gameClear = false;
+
+function getCRTSize() {
+  return Math.min(window.innerWidth, window.innerHeight) - 40;
+}
+
+function resize(){
+  dpr = window.devicePixelRatio || 1;
+  const size = getCRTSize();
+  
+  canvas.style.width = size + 'px';
+  canvas.style.height = size + 'px';
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  
+  phosphorCanvas.width = canvas.width;
+  phosphorCanvas.height = canvas.height;
+
+  cx = canvas.width / 2;
+  cy = canvas.height / 2;
+  radarRadius = (canvas.width / 2) * 0.98;
+
+  const gunAngle = (135 * Math.PI) / 180;
+  gun.x = cx + radarRadius * Math.cos(gunAngle);
+  gun.y = cy + radarRadius * Math.sin(gunAngle);
+}
+window.addEventListener('resize', resize);
+
+let targets = [];
+let beam = null; 
+const statusTextEl = document.getElementById('statusText');
+const scoreTextEl = document.getElementById('scoreText');
+const timeTextEl = document.getElementById('timeText');
+
+function updateDisplay(id, text) {
+  initAudio();
+  playSound('click'); 
+  const display = document.getElementById(id + 'Display');
+  if (display) display.textContent = text;
+}
+
+document.getElementById('trajectory').addEventListener('input', e => updateDisplay('trajectory', e.target.value + '°'));
+document.getElementById('blastTime').addEventListener('input', e => updateDisplay('blastTime', e.target.value));
+document.getElementById('spotSize').addEventListener('input', e => updateDisplay('spotSize', (e.target.value * 100).toFixed(0) + '%'));
+document.getElementById('targetSize').addEventListener('input', e => updateDisplay('targetSize', parseFloat(e.target.value).toFixed(1) + 'x'));
+
+document.getElementById('targetCount').addEventListener('input', e => {
+  updateDisplay('targetCount', e.target.value);
+  generateTargets();
+});
+
+document.getElementById('moveToggle').addEventListener('change', () => {
+  initAudio();
+  playSound('click');
+});
+
+function generateTargets() {
+  const count = parseInt(document.getElementById('targetCount').value);
+  const sizeMult = parseFloat(document.getElementById('targetSize').value) || 1.0;
+  const hitRadius = 20 * dpr * sizeMult;
+  const minDistance = hitRadius * 2.5; 
+
+  targets = [];
+  score = 0;
+  scoreTextEl.textContent = "0";
+  timerStart = null;
+  timerElapsed = 0;
+  gameClear = false;
+  timeTextEl.textContent = "0.00s";
+  statusTextEl.textContent = "READY";
+  statusTextEl.style.color = "#fff";
+
+  while (targets.length < count) {
+    let r, theta, tx, ty;
+    let isOverlapping = true;
+    let attempts = 0;
+
+    while (isOverlapping && attempts < 50) {
+      r = Math.random() * (radarRadius * 0.9);
+      theta = Math.random() * Math.PI * 2;
+      tx = cx + r * Math.cos(theta);
+      ty = cy + r * Math.sin(theta);
+      isOverlapping = false;
+
+      for (let t of targets) {
+        const dist = Math.hypot(tx - t.x, ty - t.y);
+        if (dist < minDistance) {
+          isOverlapping = true;
+          break;
+        }
+      }
+      attempts++;
+    }
+
+    const type = Math.random() > 0.3 ? 'plane' : 'ship';
+    const hue = Math.random() * 360;
+    const sat = 60 + Math.random() * 40; 
+    const lit = 40 + Math.random() * 40; 
+    
+    targets.push({
+      x: tx,
+      y: ty,
+      vx: (Math.random() - 0.5) * 2 * dpr,
+      vy: (Math.random() - 0.5) * 2 * dpr,
+      type: type,
+      color: `hsl(${hue}, ${sat}%, ${lit}%)`,
+      isHit: 0,
+      isDestroyed: false
+    });
+  }
+}
+
+document.getElementById('fireBtn').addEventListener('click', fire);
+document.addEventListener('keydown', e => { if(e.code === 'Space'){ e.preventDefault(); fire(); } });
+
+function fire() {
+  initAudio();
+  if (beam && beam.active) return; 
+  if (gameClear) return;
+  
+  playSound('fire'); 
+
+  if (timerStart === null) {
+    timerStart = performance.now();
+  }
+  
+  const angleDeg = parseFloat(document.getElementById('trajectory').value);
+  const angleRad = -angleDeg * Math.PI / 180;
+  
+  const blastFrames = parseInt(document.getElementById('blastTime').value);
+  const spotRadius = parseFloat(document.getElementById('spotSize').value) * radarRadius * 2;
+  
+  const speed = (radarRadius * 2.2) / 150; 
+  const gravity = radarRadius * 0.00005; 
+  
+  beam = {
+    x: gun.x, 
+    y: gun.y,
+    vx: Math.cos(angleRad) * speed,
+    vy: Math.sin(angleRad) * speed,
+    gravity: gravity, 
+    frame: 0,
+    blastTime: blastFrames,
+    maxSpotRadius: spotRadius,
+    active: true,
+    blastRadius: 0,
+    hasBlasted: false 
+  };
+  
+  statusTextEl.textContent = "FIRING...";
+  statusTextEl.style.color = "#fff";
+}
+
+function drawGrid(targetCtx) {
+  targetCtx.strokeStyle = 'rgba(0, 255, 0, 0.4)';
+  targetCtx.lineWidth = 2 * dpr;
+  targetCtx.beginPath();
+  for(let i=1; i<=5; i++){
+    targetCtx.arc(cx, cy, radarRadius * (i/5), 0, Math.PI*2);
+  }
+  targetCtx.moveTo(cx, cy - radarRadius); targetCtx.lineTo(cx, cy + radarRadius);
+  targetCtx.moveTo(cx - radarRadius, cy); targetCtx.lineTo(cx + radarRadius, cy);
+  targetCtx.stroke();
+}
+
+function drawPlayer(targetCtx) {
+  targetCtx.fillStyle = '#fff';
+  targetCtx.beginPath();
+  targetCtx.arc(gun.x, gun.y, 6 * dpr, 0, Math.PI*2);
+  targetCtx.fill();
+}
+
+function drawTargets(targetCtx) {
+  const sizeMult = parseFloat(document.getElementById('targetSize').value);
+  const isMoving = document.getElementById('moveToggle').checked;
+  const baseHitRadius = 20 * dpr * sizeMult;
+
+  targets.forEach(t => {
+    if (t.isDestroyed && t.isHit <= 0) return;
+
+    if (isMoving && !t.isDestroyed) {
+      t.x += t.vx;
+      t.y += t.vy;
+      const distToCenter = Math.hypot(t.x - cx, t.y - cy);
+      if (distToCenter > radarRadius * 0.9) {
+        t.vx *= -1; t.vy *= -1;
+        t.x += t.vx * 2; t.y += t.vy * 2;
+      }
+    }
+
+    targetCtx.save();
+    targetCtx.translate(t.x, t.y);
+    
+    if (t.isHit > 0) {
+      targetCtx.fillStyle = `rgba(255, 255, 255, ${t.isHit / 20})`;
+      t.isHit--;
+    } else {
+      targetCtx.fillStyle = t.color;
+    }
+
+    const scale = sizeMult * dpr;
+    targetCtx.scale(scale, scale);
+    
+    targetCtx.beginPath();
+    if (t.type === 'plane') {
+      targetCtx.moveTo(0, -15); targetCtx.lineTo(3, -5); targetCtx.lineTo(20, -2); targetCtx.lineTo(20, 2);
+      targetCtx.lineTo(3, 5); targetCtx.lineTo(0, 15); targetCtx.lineTo(-3, 15); targetCtx.lineTo(-2, 5);
+      targetCtx.lineTo(-15, 2); targetCtx.lineTo(-15, -2); targetCtx.lineTo(-2, -5); targetCtx.lineTo(-3, -15);
+    } else {
+      targetCtx.ellipse(0, 0, 8, 20, Math.PI/4, 0, Math.PI*2);
+      targetCtx.rect(-2, -5, 4, 10);
+    }
+    targetCtx.closePath();
+    targetCtx.fill();
+    targetCtx.restore();
+
+    t.currentRadius = baseHitRadius;
+  });
+}
+
+function updateHitDetection() {
+  let hitOccurred = false;
+  let newlyDestroyed = 0;
+  
+  for (let t of targets) {
+    if (t.isDestroyed) continue; 
+    
+    const distSq = (beam.x - t.x)**2 + (beam.y - t.y)**2;
+    if (distSq <= (beam.blastRadius + t.currentRadius)**2) {
+      t.isHit = 20; 
+      t.isDestroyed = true;
+      hitOccurred = true;
+      newlyDestroyed++;
+    }
+  }
+  
+  if (newlyDestroyed > 0) {
+    playSound('hit'); 
+    score += newlyDestroyed;
+    scoreTextEl.textContent = score;
+  }
+  
+  return hitOccurred;
+}
+
+function loop() {
+  pctx.fillStyle = 'rgba(0,0,0,0.15)'; 
+  pctx.fillRect(0, 0, phosphorCanvas.width, phosphorCanvas.height);
+
+  if (timerStart !== null && !gameClear) {
+    timerElapsed = performance.now() - timerStart;
+    timeTextEl.textContent = (timerElapsed / 1000).toFixed(2) + "s";
+  }
+
+  let isHitThisFrame = false;
+
+  if (beam && beam.active) {
+    if (beam.frame < beam.blastTime) {
+      beam.x += beam.vx;
+      beam.y += beam.vy;
+      beam.vy += beam.gravity; 
+      
+      pctx.fillStyle = 'rgba(200, 255, 200, 1)';
+      pctx.beginPath();
+      pctx.arc(beam.x, beam.y, 4 * dpr, 0, Math.PI*2);
+      pctx.fill();
+      beam.frame++;
+    } else {
+      if (!beam.hasBlasted) {
+        playSound('blast'); 
+        beam.hasBlasted = true;
+      }
+      
+      beam.blastRadius += (beam.maxSpotRadius - beam.blastRadius) * 0.1;
+      
+      if (updateHitDetection()) {
+        isHitThisFrame = true;
+      }
+      
+      if (isHitThisFrame) {
+        statusTextEl.textContent = "HIT!";
+        statusTextEl.style.color = "#0f0";
+      } else if (beam.blastRadius > beam.maxSpotRadius * 0.95 && statusTextEl.textContent === "FIRING...") {
+        statusTextEl.textContent = "MISS";
+        statusTextEl.style.color = "#f00";
+      }
+
+      pctx.fillStyle = `rgba(200, 255, 200, ${Math.max(0, 1 - beam.blastRadius/beam.maxSpotRadius)})`;
+      pctx.beginPath();
+      pctx.arc(beam.x, beam.y, beam.blastRadius, 0, Math.PI*2);
+      pctx.fill();
+
+      if (beam.blastRadius > beam.maxSpotRadius * 0.98) {
+        beam.active = false;
+        
+        if (score >= targets.length && !gameClear) {
+          gameClear = true;
+          playSound('clear'); 
+          statusTextEl.textContent = "CLEAR!";
+          statusTextEl.style.color = "#ff0";
+          setTimeout(() => {
+            generateTargets();
+          }, 4000);
+        } else if (!gameClear) {
+          statusTextEl.textContent = "READY";
+          statusTextEl.style.color = "#fff";
+        }
+      }
+    }
+  }
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawGrid(ctx);
+  drawTargets(ctx);
+  drawPlayer(ctx);
+  
+  ctx.globalCompositeOperation = 'screen';
+  ctx.drawImage(phosphorCanvas, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+
+  requestAnimationFrame(loop);
+}
+
+resize();
+generateTargets();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
